@@ -111,3 +111,10 @@ class PhraseMacro(Enum):
         Const.WIDTH: 60,
         Const.PHRASE: "Dispelling",
     }
+
+
+FIXES = {
+    "n;t": "n't",
+}
+
+PRONUNCIATIONS = {}

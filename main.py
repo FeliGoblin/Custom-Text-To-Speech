@@ -1,5 +1,6 @@
 import re
 import sys
+import aiofiles
 import vlc
 import logging
 import asyncio
@@ -30,17 +31,19 @@ from azure.cognitiveservices.speech import (
     CancellationReason,
 )
 
-from const import Const, OBS, Emotion, Voice, RaidIcon, PhraseMacro
-from replace import FIXES, PRONUNCIATIONS
-from obswebsocket import obsws, requests
+from const import Const, OBS, Emotion, Voice, RaidIcon, PhraseMacro, FIXES, PRONUNCIATIONS
+import simpleobsws
 
 logging.basicConfig(level=logging.INFO)
 _LOGGER = logging.getLogger("TTS")
 
 
 def setup_event_loop(app):
-    """Abstracted event loop setup for future-proofing."""
-    loop = QEventLoop(app)  # Change here if switching to QtAsyncio later
+    """Starting the event loop."""
+    # from PySide6.QtAsyncio import QAsyncioEventLoop
+    # loop = QAsyncioEventLoop(app)
+    loop = QEventLoop(app)  # Remove this line and uncomment above if switching to QtAsyncio
+    # asyncSlot() may need changing as well..
     asyncio.set_event_loop(loop)
     return loop
 
@@ -52,25 +55,24 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.app = app
         self.player: vlc.MediaPlayer = vlc.MediaPlayer()
-        self.custom_macro: str = None
-        self.speech_synthesizer: SpeechSynthesizer = None
-        self.websocket: obsws = None
+        self.custom_macro: str | None = None
+        self.speech_synthesizer: SpeechSynthesizer | None = None
+        self.websocket: simpleobsws.WebSocketClient | None = None
         self.websocket_connected: bool = False
-        self.input_text: QLineEdit = None
-        self.btn_cust_macro: QPushButton = None
+        self.input_text: QLineEdit | None = None
+        self.btn_cust_macro: QPushButton | None = None
         self.tts_emotion: str = Emotion.FRIENDLY
         self.tts_voice: str = Voice.EN_JANE
-        self.menu_emotion: QMenu = None
-        self.menu_voice: QMenu = None
+        self.menu_emotion: QMenu | None = None
+        self.menu_voice: QMenu | None = None
         self.startPos = None
         self.last_tts_text: str = ""
         self.html_template: str = ""
-        self.avatar_item_id: int = None
-        self.bubble_item_id: int = None
+        self.avatar_item_id: int | None = None
+        self.bubble_item_id: int | None = None
 
         self.setWindowTitle("Text to Speech")
         self.setup_synthesis()
-        self.setup_websocket()
         QApplication.instance().installEventFilter(self)
 
         self._build_ui()
@@ -79,19 +81,6 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout()
         layout.setSpacing(0)
         layout.setContentsMargins(0, 0, 0, 0)
-
-        """
-        row_1 = QHBoxLayout()
-        row_1.setSpacing(0)
-        row_1.setContentsMargins(0, 0, 0, 0)
-        row_2 = QHBoxLayout()
-        row_2.setSpacing(0)
-        row_2.setContentsMargins(0, 0, 0, 0)
-        row_3 = QHBoxLayout()
-        row_3.setSpacing(0)
-        row_3.setContentsMargins(0, 0, 0, 0)
-        """
-
         row_1, row_2, row_3 = QHBoxLayout(), QHBoxLayout(), QHBoxLayout()
 
         # Raid Icon Macros
@@ -100,7 +89,7 @@ class MainWindow(QMainWindow):
             btn.setIcon(QIcon(Const.ICON_FILE.replace(Const.REPLACE, icon.value, 1)))
             btn.setIconSize(QSize(30, 30))
             btn.setMinimumSize(30, 30)
-            btn.clicked.connect(lambda _, i=icon.value: asyncio.create_task(self.play_macro(i)))
+            btn.clicked.connect(lambda _, i=icon.value: self.play_macro(i))
             row_1.addWidget(btn)
 
         # Spacer
@@ -108,18 +97,14 @@ class MainWindow(QMainWindow):
 
         # Custom Macro
         self.btn_cust_macro = QPushButton("  Custom Macro  ")
-        self.btn_cust_macro.clicked.connect(
-            lambda: asyncio.create_task(self.play_macro(Const.CUSTOM))
-        )
+        self.btn_cust_macro.clicked.connect(lambda: self.play_macro(Const.CUSTOM))
         row_1.addWidget(self.btn_cust_macro)
 
         # Phrases
         for phrase in PhraseMacro:
             button = QPushButton(phrase.value.get(Const.LABEL, ""))
             button.setMinimumSize(phrase.value.get(Const.WIDTH, 40), 30)
-            button.clicked.connect(
-                lambda _, p=phrase.name.lower(): asyncio.create_task(self.play_macro(p))
-            )
+            button.clicked.connect(lambda _, p=phrase.name.lower(): self.play_macro(p))
             row_2.addWidget(button)
 
         # Text Input
@@ -140,7 +125,7 @@ class MainWindow(QMainWindow):
         # Repeat Button
         btn_repeat = QPushButton("Repeat")
         btn_repeat.setMinimumSize(60, 30)
-        btn_repeat.clicked.connect(lambda: asyncio.create_task(self.play_macro(Const.REPEAT)))
+        btn_repeat.clicked.connect(lambda: self.play_macro(Const.REPEAT))
         row_3.addWidget(btn_repeat)
 
         layout.addLayout(row_1)
@@ -159,7 +144,7 @@ class MainWindow(QMainWindow):
         self.menu_emotion = self.context_menu.addMenu("Emotion")
         self.menu_voice = self.context_menu.addMenu("Voice")
         menu_cust_macro = self.context_menu.addAction("Set Custom Macro")
-        menu_cust_macro.triggered.connect(lambda: asyncio.create_task(self.set_custom_macro()))
+        menu_cust_macro.triggered.connect(self.set_custom_macro)
         menu_exit = self.context_menu.addAction("Exit")
         menu_exit.triggered.connect(self.app.exit)
 
@@ -178,6 +163,7 @@ class MainWindow(QMainWindow):
         _LOGGER.info("Stopping the player")
         self.player.stop()
 
+    @asyncSlot()
     async def play_macro(self, macro: str) -> None:
         """Play the macro file."""
         if macro == Const.REPEAT:
@@ -213,41 +199,48 @@ class MainWindow(QMainWindow):
         """Make the on-screen avatar talk while the speech audio is playing."""
         if self.websocket_connected:
             await asyncio.sleep(0.2)
-            self.send_speech_bubble_text(True, override or self.last_tts_text)
-            self.move_mouth(True)
+            await self.send_speech_bubble_text(True, override or self.last_tts_text)
+            await self.move_mouth(True)
             while self.player.is_playing():
-                self.move_mouth(False)
+                await self.move_mouth(False)
                 await asyncio.sleep(0.2)
-                self.move_mouth(True)
+                await self.move_mouth(True)
                 await asyncio.sleep(0.2)
-            self.move_mouth(False)
-            self.send_speech_bubble_text(False)
+            await self.move_mouth(False)
+            await self.send_speech_bubble_text(False)
 
-    def move_mouth(self, enable: bool) -> None:
+    async def move_mouth(self, enable: bool) -> None:
         """Enable and disable the open-mouth image of the avatar."""
-        self.websocket.call(
-            requests.SetSceneItemEnabled(
-                sceneName=OBS.AVA_SCENE,
-                sceneItemId=self.avatar_item_id,
-                sceneItemEnabled=enable,
+        await self.websocket.call(
+            simpleobsws.Request(
+                "SetSceneItemEnabled",
+                {
+                    "sceneName": OBS.AVA_SCENE,
+                    "sceneItemId": self.avatar_item_id,
+                    "sceneItemEnabled": enable,
+                },
             )
         )
 
-    def send_speech_bubble_text(self, enable: bool, text: str = "") -> None:
-        """Send TTS text to the speech-bubble browser source."""
+    async def send_speech_bubble_text(self, enable: bool, text: str = "") -> None:
+        """Update the speech-bubble HTML, and enable/disable the speech-bubble browser source."""
         if text:
             icon = ""
             if text.endswith(Const.REPLACE):
                 text = text[:-1]
                 icon = f'&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<img src="icons/{text}.png" />'
             html = self.html_template.replace(Const.REPLACE, text.capitalize() + icon, 1)
-            with open("speech-bubble.html", "w") as f:
-                f.write(html)
-        self.websocket.call(
-            requests.SetSceneItemEnabled(
-                sceneName=OBS.BUB_SCENE,
-                sceneItemId=self.bubble_item_id,
-                sceneItemEnabled=enable,
+            async with aiofiles.open("speech-bubble.html", "w") as f:
+                await f.write(html)
+
+        await self.websocket.call(
+            simpleobsws.Request(
+                "SetSceneItemEnabled",
+                {
+                    "sceneName": OBS.BUB_SCENE,
+                    "sceneItemId": self.bubble_item_id,
+                    "sceneItemEnabled": enable,
+                },
             )
         )
 
@@ -273,6 +266,7 @@ class MainWindow(QMainWindow):
         _LOGGER.info("Setting the line-edit placeholder to: %s", placeholder)
         self.input_text.setPlaceholderText(placeholder)
 
+    @asyncSlot()
     async def set_custom_macro(self) -> None:
         """Set the custom macro."""
         custom_text = self.input_text.text()
@@ -285,7 +279,7 @@ class MainWindow(QMainWindow):
         _LOGGER.info("Custom macro set: %s", custom_text)
         self.input_text.clear()
 
-    @asyncSlot()  # Change here if switching to QtAsyncio later
+    @asyncSlot()
     async def text_to_speech(
         self, input_text: str, channel: str, *, create_custom_macro: bool = False
     ) -> None:
@@ -310,11 +304,11 @@ class MainWindow(QMainWindow):
 
         # SSML creation.
         tts_ssml = (
-            '<speak xmlns="http://www.w3.org/2001/10/synthesis" xmlns:mstts="http://www.w3.org/2001/mstts"'
+            '<speak xmlns="http://www.w3.org/2001/10/synthesis" xmlns:mstts="http://www.w3.org/2001/mstts" '
             + 'xmlns:emo="http://www.w3.org/2009/10/emotionml" version="1.0" xml:lang="en-US">'
             + f'<voice name="{self.tts_voice}"><mstts:express-as style="{self.tts_emotion.lower()}" styledegree="1">'
             + f'<prosody rate="{tts_rate}%" pitch="{tts_pitch}%">{tts_input}</prosody>'
-            + "/mstts:express-as></voice></speak>"
+            + "</mstts:express-as></voice></speak>"
         )
 
         tts_result = await asyncio.to_thread(
@@ -349,40 +343,50 @@ class MainWindow(QMainWindow):
             if event.modifiers() == Qt.KeyboardModifier.ShiftModifier:
                 if self.input_text.text():
                     _LOGGER.info("Shift + Return pressed for alt mic channel")
-                    asyncio.create_task(
-                        self.text_to_speech(self.input_text.text(), Const.ALT_CHANNEL)
-                    )
+                    self.text_to_speech(self.input_text.text(), Const.ALT_CHANNEL)
                 else:
                     _LOGGER.info("Shift + Return pressed with no text input.")
                     self.stop()
             else:
                 if self.input_text.text():
                     _LOGGER.info("Return pressed for main mic channel")
-                    asyncio.create_task(
-                        self.text_to_speech(self.input_text.text(), Const.MAIN_CHANNEL)
-                    )
+                    self.text_to_speech(self.input_text.text(), Const.MAIN_CHANNEL)
                 else:
                     _LOGGER.info("Return pressed with no text input.")
 
-    def setup_websocket(self) -> None:
-        """Set up websocket client and get scene item ID."""
-        self.websocket = obsws(OBS.HOST, OBS.PORT)
+    async def setup_websocket(self) -> None:
+        """Set up async OBS WebSocket client and get scene item IDs."""
+        print("test")
+        self.websocket = simpleobsws.WebSocketClient(
+            url=f"ws://{OBS.HOST}:{OBS.PORT}", password=OBS.PWD
+        )
         try:
-            _LOGGER.info("Connecting to OBS Websocket")
-            self.websocket.connect()
-            avatar_scene_item = self.websocket.call(
-                requests.GetSceneItemId(sceneName=OBS.AVA_SCENE, sourceName=OBS.AVA_SOURCE)
+            _LOGGER.info("Connecting to OBS WebSocket...")
+            await self.websocket.connect()
+            await self.websocket.wait_until_identified()
+            _LOGGER.info("Connected to OBS!")
+
+            # Get avatar and speech-bubble item IDs
+            avatar_response = await self.websocket.call(
+                simpleobsws.Request(
+                    "GetSceneItemId", {"sceneName": OBS.AVA_SCENE, "sourceName": OBS.AVA_SOURCE}
+                )
             )
-            self.avatar_item_id = avatar_scene_item.datain["sceneItemId"]
-            bubble_scene_item = self.websocket.call(
-                requests.GetSceneItemId(sceneName=OBS.BUB_SCENE, sourceName=OBS.BUB_SOURCE)
+            self.avatar_item_id = avatar_response.responseData["sceneItemId"]
+
+            bubble_response = await self.websocket.call(
+                simpleobsws.Request(
+                    "GetSceneItemId", {"sceneName": OBS.BUB_SCENE, "sourceName": OBS.BUB_SOURCE}
+                )
             )
-            self.bubble_item_id = bubble_scene_item.datain["sceneItemId"]
+            self.bubble_item_id = bubble_response.responseData["sceneItemId"]
+
             self.websocket_connected = True
-        except Exception:
-            _LOGGER.warning("Couldn't connect to OBS. Is it open?")
-        with open("speech-bubble-template.html") as f:
-            self.html_template = f.read()
+        except Exception as e:
+            _LOGGER.warning(f"Couldn't connect to OBS: {e}")
+        finally:
+            with open("speech-bubble-template.html") as f:
+                self.html_template = f.read()
 
     def setup_synthesis(self) -> None:
         """Configure and connect to Azure TTS."""
@@ -432,6 +436,8 @@ async def main():
 
     loop = setup_event_loop(app)
     with loop:
+        _LOGGER.info("Starting event loop and scheduling OBS WebSocket setup...")
+        loop.call_soon(asyncio.create_task, window.setup_websocket())
         await loop.run_forever()
 
 
