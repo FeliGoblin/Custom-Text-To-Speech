@@ -6,4 +6,5 @@ secrets.env
 *.code-workspace
 .venv/
 backup.html
+speech-bubble.html
 Logo.ico
