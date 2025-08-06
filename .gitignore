@@ -1,0 +1,9 @@
+**/__pycache__/
+*.bat
+*.lnk
+secrets.env
+*.ttf
+*.code-workspace
+.venv/
+backup.html
+Logo.ico

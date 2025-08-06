@@ -1,0 +1,10 @@
+pip install python-vlc
+pip install azure-cognitiveservices-speech
+pip install python-dotenv
+pip install obs-websocket-py==1.0
+
+font PTN77f.ttf:
+https://github.com/desero/pt-sans
+
+edit secrets.env
+GetAudioDevices.py for audio channels

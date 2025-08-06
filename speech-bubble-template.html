@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<head>
+    <style>
+        body {
+            overflow: hidden;
+        }
+        #wrapper { 
+            text-align: center;
+            height: 100vh;
+            display: flex; 
+            justify-content: center; 
+            align-items: center;
+            opacity: 0.95;
+        }
+        #speech-bubble {
+            color: white;
+            font-size: 28px;
+            line-height: 28px;
+            font-family: 'PT Sans Narrow';
+            font-weight: 550;
+            background: #0f0f0f;
+            padding: 20px;
+            border-radius: 48px;
+            position: absolute;
+            right: 12px;
+            max-width: 600px;
+        }
+        img {
+            width: 26px;
+            height: 26px;
+            position: absolute;
+            top: 21px;
+            right: 16px;
+        }
+        #arrow {
+            right: 6px;
+            height: 26px;
+            width: 26px;
+            background: #0f0f0f;
+            transform: rotate(45deg);
+            position: absolute;
+        }
+    </style>
+</head>
+<body>
+    <div id="wrapper">
+        <div id="arrow"></div>
+        <div id="speech-bubble">
+            $
+        </div>
+    </div>
+</body>
