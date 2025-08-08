@@ -1,9 +1,12 @@
 from enum import Enum, StrEnum
-
+from PySide6.QtGui import QIcon
 from dotenv import load_dotenv
 import os
 
 load_dotenv("secrets.env")
+
+ON = True
+OFF = False
 
 
 class Const(StrEnum):
@@ -73,6 +76,12 @@ class RaidIcon(StrEnum):
     CROSS = "cross"
     SKULL = "skull"
     UNMARKED = "unmarked"
+
+
+class WebSocketIcon:
+    ON = QIcon("icons/wifi.svg")
+    OFF = QIcon("icons/no_wifi.svg")
+    OFF_RED = QIcon("icons/no_wifi_red.svg")
 
 
 class PhraseMacro(Enum):
