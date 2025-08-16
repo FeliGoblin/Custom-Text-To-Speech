@@ -218,7 +218,7 @@ class MainWindow(QMainWindow):
 
     def play(self, file: str, channel: str) -> None:
         """Play audio file."""
-        self.player.stop()
+        self.player.pause()
         self.player.set_media(vlc.Media(file))
         self.player.audio_output_device_set(None, channel)
         _LOGGER.info("Playing audio file (%s) on %s", file, Const(channel).name)
