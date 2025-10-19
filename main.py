@@ -15,7 +15,7 @@ from PySide6.QtGui import (
     QKeyEvent,
     QMouseEvent,
 )
-from PySide6.QtCore import QSize, Qt, QTimer, QEvent, QPointF, QMetaObject, Slot
+from PySide6.QtCore import QSize, Qt, QTimer, QPointF, QMetaObject, Slot
 
 from PySide6.QtWidgets import (
     QApplication,
@@ -41,6 +41,7 @@ from azure.cognitiveservices.speech import (
 
 from const import (
     Const,
+    Layout,
     OBS,
     Emotion,
     Voice,
@@ -65,9 +66,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.app: QApplication = app
         self.setWindowTitle("Text to Speech")
-        QApplication.instance().installEventFilter(self)
         self.start_pos: QPointF = None
-        self.dragging: bool = False
 
         # VLC
         self.player: vlc.MediaPlayer = vlc.MediaPlayer()
@@ -85,6 +84,7 @@ class MainWindow(QMainWindow):
         self.websocket_connected: bool = False
         self.avatar_item_id: int | None = None
         self.bubble_item_id: int | None = None
+        self.speaking_task: asyncio.Task | None = None
         self.html_template: str = ""
         self.last_tts_text: str = ""
 
@@ -93,6 +93,9 @@ class MainWindow(QMainWindow):
         self.input_text: QLineEdit | None = None
         self.menu_emotion: QMenu | None = None
         self.menu_voice: QMenu | None = None
+        self.number_row_state: bool = False
+        self.number_row_container: QWidget | None = None
+        self.active_rows: int = Layout.DEFAULT_ROWS
 
         self._build_ui()
 
@@ -100,7 +103,13 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout()
         layout.setSpacing(0)
         layout.setContentsMargins(0, 0, 0, 0)
-        row_1, row_2, row_3 = QHBoxLayout(), QHBoxLayout(), QHBoxLayout()
+        number_row, row_1, row_2, row_3 = (
+            QHBoxLayout(),
+            QHBoxLayout(),
+            QHBoxLayout(),
+            QHBoxLayout(),
+        )
+        self.number_row_state = False
 
         def make_button(
             text: str = "",
@@ -128,9 +137,7 @@ class MainWindow(QMainWindow):
         def populate_menu(menu: QMenu, items: type[StrEnum], handler):
             """Fill a QMenu with QAction items from an iterable, binding each to handler."""
             for value in items:
-                menu.addAction(value.value).triggered.connect(
-                    lambda _, v=value.value: handler(v)
-                )
+                menu.addAction(value.value).triggered.connect(lambda _, v=value.value: handler(v))
 
         # Raid Icon Macros
         for icon in RaidIcon:
@@ -147,9 +154,7 @@ class MainWindow(QMainWindow):
             icon=WebSocketIcon.OFF, size=(25, 30), click=self.trigger_websocket
         )
         self.btn_websocket.setIconSize(QSize(15, 15))
-        self.btn_websocket.setStyleSheet(
-            "QPushButton { background: transparent; border: none; }"
-        )
+        self.btn_websocket.setStyleSheet("QPushButton { background: transparent; border: none; }")
         row_1.addWidget(self.btn_websocket)
 
         # Spacer
@@ -163,12 +168,24 @@ class MainWindow(QMainWindow):
 
         # Phrase Macros
         for phrase in PhraseMacro:
+            if phrase.name.startswith(Const._):
+                continue
             row_2.addWidget(
                 make_button(
                     phrase.value.get(Const.LABEL, ""),
                     size=(phrase.value.get(Const.WIDTH, 40), 30),
                     click=partial(self.play_macro, phrase.name.lower()),
                 )
+            )
+
+        # Number Row
+        self.number_row_container = QWidget()
+        number_row = QHBoxLayout(self.number_row_container)
+        number_row.setSpacing(0)
+        number_row.setContentsMargins(0, 0, 0, 0)
+        for num in range(14):
+            number_row.addWidget(
+                make_button(str(num), min_size=(30, 30), click=partial(self.play_macro, f"_{num}"))
             )
 
         # Text Input
@@ -186,12 +203,15 @@ class MainWindow(QMainWindow):
 
         # Layout Stuff
         layout.addLayout(row_1)
+        layout.addWidget(self.number_row_container)
+        self.number_row_container.hide()
         layout.addLayout(row_2)
         layout.addLayout(row_3)
+
         widget = QWidget()
         widget.setLayout(layout)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        self.setFixedSize(QSize(450, 90))
+        self.setFixedSize(QSize(Layout.FIXED_WIDTH, Layout.FIXED_ROW_HEIGHT * self.active_rows))
         self.setCentralWidget(widget)
         self.setWindowFlag(Qt.WindowStaysOnTopHint)
         self.setWindowFlag(Qt.FramelessWindowHint)
@@ -200,6 +220,7 @@ class MainWindow(QMainWindow):
         self.context_menu = QMenu(self)
         self.menu_emotion = self.context_menu.addMenu("Emotion")
         self.menu_voice = self.context_menu.addMenu("Voice")
+        self.context_menu.addAction("Toggle Numbers").triggered.connect(self.toggle_number_row)
         self.context_menu.addAction("Set Custom Macro").triggered.connect(self.set_custom_macro)
         self.context_menu.addAction("Exit").triggered.connect(
             lambda: asyncio.create_task(self.shutdown())
@@ -212,13 +233,25 @@ class MainWindow(QMainWindow):
     async def setup(self):
         self.websocket_reconnect_task = asyncio.create_task(self.connect_obs_websocket())
 
+    def toggle_number_row(self) -> None:
+        """Show or hide the number row."""
+        self.number_row_state = not self.number_row_state
+        if self.number_row_state:
+            self.active_rows += 1
+            self.setFixedSize(QSize(Layout.FIXED_WIDTH, Layout.FIXED_ROW_HEIGHT * self.active_rows))
+            self.number_row_container.show()
+        else:
+            self.active_rows -= 1
+            self.setFixedSize(QSize(Layout.FIXED_WIDTH, Layout.FIXED_ROW_HEIGHT * self.active_rows))
+            self.number_row_container.hide()
+
     # ------------------------------
     # VLC Media Player
     # ------------------------------
 
     def play(self, file: str, channel: str) -> None:
         """Play audio file."""
-        self.player.stop()
+        self.player.pause()
         self.player.set_media(vlc.Media(file))
         self.player.audio_output_device_set(None, channel)
         _LOGGER.info("Playing audio file (%s) on %s", file, Const(channel).name)
@@ -247,7 +280,7 @@ class MainWindow(QMainWindow):
         else:
             file = Const.MACRO_FILE.replace(Const.REPLACE, macro, 1)
             try:
-                text = RaidIcon(macro).value + (
+                text = RaidIcon(macro).value.capitalize() + (
                     Const.REPLACE if macro != RaidIcon.UNMARKED else ""
                 )
                 _LOGGER.info("Macro is a raid icon")
@@ -257,7 +290,10 @@ class MainWindow(QMainWindow):
 
         _LOGGER.info(f"Playing macro: {macro}")
         self.play(file, Const.MAIN_CHANNEL)
-        await self.avatar_talk(text)
+        if self.speaking_task:
+            self.speaking_task.cancel()
+        self.speaking_task = asyncio.create_task(self.avatar_talk(text))
+        # await self.avatar_talk(text)
 
     # ------------------------------
     # Settings Menus
@@ -323,9 +359,7 @@ class MainWindow(QMainWindow):
         speech_config.set_speech_synthesis_output_format(
             SpeechSynthesisOutputFormat.Riff24Khz16BitMonoPcm
         )
-        self.speech_synthesizer = SpeechSynthesizer(
-            speech_config=speech_config, audio_config=None
-        )
+        self.speech_synthesizer = SpeechSynthesizer(speech_config=speech_config, audio_config=None)
         _LOGGER.info("Connecting to Azure TTS")
         connection = Connection.from_speech_synthesizer(self.speech_synthesizer)
         connection.open(True)
@@ -346,7 +380,7 @@ class MainWindow(QMainWindow):
         # text_to_speech() not in GUI thread, so interact with widget with invokeMethod
         QMetaObject.invokeMethod(self, "clear_text_input")
         tts_rate = "5"
-        tts_pitch = "5"
+        tts_pitch = "4"
 
         _LOGGER.info("Fixing typing mistakes")
         for mistake, fix in FIXES.items():
@@ -368,9 +402,7 @@ class MainWindow(QMainWindow):
             + "</mstts:express-as></voice></speak>"
         )
 
-        tts_result = await asyncio.to_thread(
-            self.speech_synthesizer.speak_ssml_async(tts_ssml).get
-        )
+        tts_result = await asyncio.to_thread(self.speech_synthesizer.speak_ssml_async(tts_ssml).get)
         if tts_result.reason == ResultReason.Canceled:
             cancellation_details = tts_result.cancellation_details
             _LOGGER.warning("Speech synthesis canceled: %s", cancellation_details.reason)
@@ -392,7 +424,12 @@ class MainWindow(QMainWindow):
         _LOGGER.info("Saved speech file: %s", Const.TTS_FILE)
         self.last_tts_text = input_text
         self.play(Const.TTS_FILE, channel)
-        await self.avatar_talk()
+        if self.speaking_task:
+            self.speaking_task.cancel()
+        self.speaking_task = asyncio.create_task(
+            self.avatar_talk(alt_channel=False if channel == Const.MAIN_CHANNEL else True)
+        )
+        # await self.avatar_talk()
 
     # ------------------------------
     # OBS Websocket
@@ -500,11 +537,12 @@ class MainWindow(QMainWindow):
         async with aiofiles.open("speech-bubble-template.html", "r") as f:
             self.html_template = await f.read()
 
-    async def avatar_talk(self, override: str | None = None) -> None:
+    async def avatar_talk(self, override: str | None = None, alt_channel: bool = False) -> None:
         """Make the on-screen avatar talk while the speech audio is playing."""
         if self.websocket and self.websocket.is_identified():
+            await self.send_speech_bubble_text(False)
             await asyncio.sleep(0.2)
-            await self.send_speech_bubble_text(True, override or self.last_tts_text)
+            await self.send_speech_bubble_text(True, override or self.last_tts_text, alt_channel)
             await self.move_mouth(True)
             while self.player.is_playing():
                 await self.move_mouth(False)
@@ -512,6 +550,7 @@ class MainWindow(QMainWindow):
                 await self.move_mouth(True)
                 await asyncio.sleep(0.2)
             await self.move_mouth(False)
+            await asyncio.sleep(3)
             await self.send_speech_bubble_text(False)
 
     async def move_mouth(self, enable: bool) -> None:
@@ -528,7 +567,9 @@ class MainWindow(QMainWindow):
                 )
             )
 
-    async def send_speech_bubble_text(self, enable: bool, text: str = "") -> None:
+    async def send_speech_bubble_text(
+        self, enable: bool, text: str = "", alt_channel: bool = False
+    ) -> None:
         """Update the speech-bubble HTML, and enable/disable the speech-bubble browser source."""
         if not self.html_template:
             await self.load_html_template()
@@ -540,7 +581,8 @@ class MainWindow(QMainWindow):
             if text.endswith(Const.REPLACE):
                 text = text.removesuffix(Const.REPLACE)
                 icon = f'&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<img src="icons/{text}.png" />'
-            html = self.html_template.replace(Const.REPLACE, text.capitalize() + icon, 1)
+            html = self.html_template.replace(Const.REPLACE, "show" if alt_channel else "hide", 1)
+            html = html.replace(Const.REPLACE, text + icon, 1)
             async with aiofiles.open("speech-bubble.html", "w") as f:
                 await f.write(html)
 
@@ -576,9 +618,7 @@ class MainWindow(QMainWindow):
                     self.stop()
             elif self.input_text.text():
                 _LOGGER.info("Return pressed for main mic channel")
-                asyncio.create_task(
-                    self.text_to_speech(self.input_text.text(), Const.MAIN_CHANNEL)
-                )
+                asyncio.create_task(self.text_to_speech(self.input_text.text(), Const.MAIN_CHANNEL))
             else:
                 _LOGGER.info("Return pressed with no text input.")
 
@@ -587,38 +627,25 @@ class MainWindow(QMainWindow):
         _LOGGER.info("Opening context menu")
         self.context_menu.exec(event.globalPos())
 
+    def mousePressEvent(self, event):
+        if event.button() in (Qt.MouseButton.LeftButton, Qt.MouseButton.MiddleButton):
+            self.start_pos = event.globalPosition() - self.frameGeometry().topLeft()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self.start_pos is not None:
+            new_pos = event.globalPosition() - self.start_pos
+            self.move(new_pos.toPoint())
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self.start_pos = None
+        super().mouseReleaseEvent(event)
+
     def closeEvent(self, event):
         """Override window close to ensure async shutdown is triggered."""
         asyncio.create_task(self.shutdown())  # fire off coroutine safely
         super().closeEvent(event)
-
-    def eventFilter(self, source, event):
-        if isinstance(event, QMouseEvent):
-            if (
-                event.type() == QEvent.Type.MouseButtonPress
-                and not self.input_text.underMouse()
-                and event.button()
-                in (
-                    Qt.MouseButton.LeftButton,
-                    Qt.MouseButton.MiddleButton,
-                )
-            ):
-                self.start_pos = event.globalPosition() - self.frameGeometry().topLeft()
-                self.dragging = False
-            elif event.type() == QEvent.Type.MouseMove and self.start_pos is not None:
-                if not self.dragging:
-                    if (event.globalPosition() - self.start_pos).manhattanLength() > 5:
-                        self.dragging = True
-                if self.dragging:
-                    new_pos = event.globalPosition() - self.start_pos
-                    self.move(new_pos.toPoint())
-                    return True  # Block event to prevent unintended widget actions
-            elif event.type() == QEvent.Type.MouseButtonRelease:
-                self.start_pos = None
-                if self.dragging:
-                    self.dragging = False
-                    return True  # Block event to prevent unintended widget actions
-        return super().eventFilter(source, event)
 
     # ------------------------------
     # Shutting down

@@ -1,4 +1,4 @@
-from enum import Enum, StrEnum
+from enum import Enum, StrEnum, IntEnum
 from PySide6.QtGui import QIcon
 from dotenv import load_dotenv
 import os
@@ -24,6 +24,13 @@ class Const(StrEnum):
     CUSTOM = "custom"
     REPEAT = "repeat"
     REPLACE = "$"
+    _ = "_"
+
+
+class Layout(IntEnum):
+    FIXED_WIDTH = 450
+    FIXED_ROW_HEIGHT = 30
+    DEFAULT_ROWS = 3
 
 
 class OBS(StrEnum):
@@ -85,6 +92,9 @@ class WebSocketIcon:
 
 
 class PhraseMacro(Enum):
+    _phrase_numbers = {f"{Const._}{i}": {Const.PHRASE: str(i)} for i in range(16)}
+    locals().update(_phrase_numbers)
+
     YES = {
         Const.LABEL: "Yes",
         Const.WIDTH: 40,
@@ -126,4 +136,4 @@ FIXES = {
     "n;t": "n't",
 }
 
-PRONUNCIATIONS = {}
+PRONUNCIATIONS = {"retard": "re'tard"}
