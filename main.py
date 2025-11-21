@@ -675,8 +675,7 @@ def setup_event_loop(app):
     asyncio.set_event_loop(loop)
     return loop
 
-
-async def main():
+def main():
     app = QApplication(sys.argv)
     QFontDatabase.addApplicationFont(
         "PTN77F.ttf"  # font from https://github.com/desero/pt-sans
@@ -684,10 +683,10 @@ async def main():
     app.setFont(QFont("PT Sans"))
     app.setStyle("Fusion")
 
-    loop = setup_event_loop(app)
-
     window = MainWindow(app)
     window.show()
+
+    loop = setup_event_loop(app)
 
     with loop:
         _LOGGER.info("Starting event loop and scheduling OBS WebSocket setup...")
@@ -704,4 +703,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
