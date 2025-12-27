@@ -37,10 +37,10 @@ class OBS(StrEnum):
     HOST = str(os.getenv("OBS_HOST"))
     PORT = str(os.getenv("OBS_PORT"))
     PWD = str(os.getenv("OBS_PWD"))
-    AVA_SCENE = "Goblin"
+    AVA_SCENE = "Goblin Wrap"
     AVA_SOURCE = "Goblin-Talking"
-    BUB_SCENE = "WoW"
-    BUB_SOURCE = "Speech Bubble"
+    BUB_SCENE = "SpeechBubble Wrap"
+    BUB_SOURCE = "SpeechBubble"
 
 
 class Emotion(StrEnum):
@@ -128,7 +128,7 @@ class PhraseMacro(Enum):
     DISPEL = {
         Const.LABEL: "Dispel",
         Const.WIDTH: 60,
-        Const.PHRASE: "Dispelling",
+        Const.PHRASE: "Dispel me",
     }
 
 

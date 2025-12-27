@@ -137,7 +137,9 @@ class MainWindow(QMainWindow):
         def populate_menu(menu: QMenu, items: type[StrEnum], handler):
             """Fill a QMenu with QAction items from an iterable, binding each to handler."""
             for value in items:
-                menu.addAction(value.value).triggered.connect(lambda _, v=value.value: handler(v))
+                menu.addAction(value.value).triggered.connect(
+                    lambda _, v=value.value: handler(v)
+                )
 
         # Raid Icon Macros
         for icon in RaidIcon:
@@ -154,7 +156,9 @@ class MainWindow(QMainWindow):
             icon=WebSocketIcon.OFF, size=(25, 30), click=self.trigger_websocket
         )
         self.btn_websocket.setIconSize(QSize(15, 15))
-        self.btn_websocket.setStyleSheet("QPushButton { background: transparent; border: none; }")
+        self.btn_websocket.setStyleSheet(
+            "QPushButton { background: transparent; border: none; }"
+        )
         row_1.addWidget(self.btn_websocket)
 
         # Spacer
@@ -185,7 +189,11 @@ class MainWindow(QMainWindow):
         number_row.setContentsMargins(0, 0, 0, 0)
         for num in range(14):
             number_row.addWidget(
-                make_button(str(num), min_size=(30, 30), click=partial(self.play_macro, f"_{num}"))
+                make_button(
+                    str(num),
+                    min_size=(30, 30),
+                    click=partial(self.play_macro, f"_{num}"),
+                )
             )
 
         # Text Input
@@ -198,7 +206,9 @@ class MainWindow(QMainWindow):
         # Stop & Repeat Buttons
         row_3.addWidget(make_button("Stop", size=(50, 30), click=self.stop))
         row_3.addWidget(
-            make_button("Repeat", size=(60, 30), click=lambda: self.play_macro(Const.REPEAT))
+            make_button(
+                "Repeat", size=(60, 30), click=lambda: self.play_macro(Const.REPEAT)
+            )
         )
 
         # Layout Stuff
@@ -211,7 +221,9 @@ class MainWindow(QMainWindow):
         widget = QWidget()
         widget.setLayout(layout)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        self.setFixedSize(QSize(Layout.FIXED_WIDTH, Layout.FIXED_ROW_HEIGHT * self.active_rows))
+        self.setFixedSize(
+            QSize(Layout.FIXED_WIDTH, Layout.FIXED_ROW_HEIGHT * self.active_rows)
+        )
         self.setCentralWidget(widget)
         self.setWindowFlag(Qt.WindowStaysOnTopHint)
         self.setWindowFlag(Qt.FramelessWindowHint)
@@ -220,8 +232,12 @@ class MainWindow(QMainWindow):
         self.context_menu = QMenu(self)
         self.menu_emotion = self.context_menu.addMenu("Emotion")
         self.menu_voice = self.context_menu.addMenu("Voice")
-        self.context_menu.addAction("Toggle Numbers").triggered.connect(self.toggle_number_row)
-        self.context_menu.addAction("Set Custom Macro").triggered.connect(self.set_custom_macro)
+        self.context_menu.addAction("Toggle Numbers").triggered.connect(
+            self.toggle_number_row
+        )
+        self.context_menu.addAction("Set Custom Macro").triggered.connect(
+            self.set_custom_macro
+        )
         self.context_menu.addAction("Exit").triggered.connect(
             lambda: asyncio.create_task(self.shutdown())
         )
@@ -231,18 +247,24 @@ class MainWindow(QMainWindow):
         populate_menu(self.menu_voice, Voice, self.set_voice)
 
     async def setup(self):
-        self.websocket_reconnect_task = asyncio.create_task(self.connect_obs_websocket())
+        self.websocket_reconnect_task = asyncio.create_task(
+            self.connect_obs_websocket()
+        )
 
     def toggle_number_row(self) -> None:
         """Show or hide the number row."""
         self.number_row_state = not self.number_row_state
         if self.number_row_state:
             self.active_rows += 1
-            self.setFixedSize(QSize(Layout.FIXED_WIDTH, Layout.FIXED_ROW_HEIGHT * self.active_rows))
+            self.setFixedSize(
+                QSize(Layout.FIXED_WIDTH, Layout.FIXED_ROW_HEIGHT * self.active_rows)
+            )
             self.number_row_container.show()
         else:
             self.active_rows -= 1
-            self.setFixedSize(QSize(Layout.FIXED_WIDTH, Layout.FIXED_ROW_HEIGHT * self.active_rows))
+            self.setFixedSize(
+                QSize(Layout.FIXED_WIDTH, Layout.FIXED_ROW_HEIGHT * self.active_rows)
+            )
             self.number_row_container.hide()
 
     # ------------------------------
@@ -272,7 +294,9 @@ class MainWindow(QMainWindow):
             if not self.custom_macro_text:
                 if not self.input_text.text():
                     _LOGGER.warning("A custom macro has not been set")
-                    await self.set_progress_message("A custom macro has not been set", 4)
+                    await self.set_progress_message(
+                        "A custom macro has not been set", 4
+                    )
                     return
                 return self.set_custom_macro()
             file = Const.CUSTOM_FILE
@@ -355,11 +379,15 @@ class MainWindow(QMainWindow):
 
     def setup_synthesis(self) -> None:
         """Configure and connect to Azure TTS."""
-        speech_config = SpeechConfig(subscription=Const.API_KEY, region=Const.API_REGION)
+        speech_config = SpeechConfig(
+            subscription=Const.API_KEY, region=Const.API_REGION
+        )
         speech_config.set_speech_synthesis_output_format(
             SpeechSynthesisOutputFormat.Riff24Khz16BitMonoPcm
         )
-        self.speech_synthesizer = SpeechSynthesizer(speech_config=speech_config, audio_config=None)
+        self.speech_synthesizer = SpeechSynthesizer(
+            speech_config=speech_config, audio_config=None
+        )
         _LOGGER.info("Connecting to Azure TTS")
         connection = Connection.from_speech_synthesizer(self.speech_synthesizer)
         connection.open(True)
@@ -391,7 +419,9 @@ class MainWindow(QMainWindow):
 
         _LOGGER.info("Fixing pronunciations")
         for mispronounced, repronounced in PRONUNCIATIONS.items():
-            tts_input = re.sub(mispronounced, repronounced, tts_input, flags=re.IGNORECASE)
+            tts_input = re.sub(
+                mispronounced, repronounced, tts_input, flags=re.IGNORECASE
+            )
 
         # SSML creation.
         tts_ssml = (
@@ -402,13 +432,19 @@ class MainWindow(QMainWindow):
             + "</mstts:express-as></voice></speak>"
         )
 
-        tts_result = await asyncio.to_thread(self.speech_synthesizer.speak_ssml_async(tts_ssml).get)
+        tts_result = await asyncio.to_thread(
+            self.speech_synthesizer.speak_ssml_async(tts_ssml).get
+        )
         if tts_result.reason == ResultReason.Canceled:
             cancellation_details = tts_result.cancellation_details
-            _LOGGER.warning("Speech synthesis canceled: %s", cancellation_details.reason)
+            _LOGGER.warning(
+                "Speech synthesis canceled: %s", cancellation_details.reason
+            )
             if cancellation_details.reason == CancellationReason.Error:
                 if cancellation_details.error_details:
-                    _LOGGER.error("Error details: %s", cancellation_details.error_details)
+                    _LOGGER.error(
+                        "Error details: %s", cancellation_details.error_details
+                    )
             return
 
         # Save speech to memory.
@@ -427,7 +463,9 @@ class MainWindow(QMainWindow):
         if self.speaking_task:
             self.speaking_task.cancel()
         self.speaking_task = asyncio.create_task(
-            self.avatar_talk(alt_channel=False if channel == Const.MAIN_CHANNEL else True)
+            self.avatar_talk(
+                alt_channel=False if channel == Const.MAIN_CHANNEL else True
+            )
         )
         # await self.avatar_talk()
 
@@ -442,7 +480,9 @@ class MainWindow(QMainWindow):
             await self.config_websocket_status(OFF)
             await self.set_progress_message("OBS Disconnected", 2)
             return
-        self.websocket_reconnect_task = asyncio.create_task(self.connect_obs_websocket())
+        self.websocket_reconnect_task = asyncio.create_task(
+            self.connect_obs_websocket()
+        )
 
     async def config_websocket_status(self, toggle: bool, soft: bool = False) -> None:
         if not toggle:
@@ -537,12 +577,16 @@ class MainWindow(QMainWindow):
         async with aiofiles.open("speech-bubble-template.html", "r") as f:
             self.html_template = await f.read()
 
-    async def avatar_talk(self, override: str | None = None, alt_channel: bool = False) -> None:
+    async def avatar_talk(
+        self, override: str | None = None, alt_channel: bool = False
+    ) -> None:
         """Make the on-screen avatar talk while the speech audio is playing."""
         if self.websocket and self.websocket.is_identified():
             await self.send_speech_bubble_text(False)
             await asyncio.sleep(0.2)
-            await self.send_speech_bubble_text(True, override or self.last_tts_text, alt_channel)
+            await self.send_speech_bubble_text(
+                True, override or self.last_tts_text, alt_channel
+            )
             await self.move_mouth(True)
             while self.player.is_playing():
                 await self.move_mouth(False)
@@ -576,17 +620,31 @@ class MainWindow(QMainWindow):
         if not self.html_template:
             await self.set_progress_message("HTML template could not be loaded")
 
-        if text and self.html_template:
-            icon = ""
-            if text.endswith(Const.REPLACE):
-                text = text.removesuffix(Const.REPLACE)
-                icon = f'&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<img src="icons/{text}.png" />'
-            html = self.html_template.replace(Const.REPLACE, "show" if alt_channel else "hide", 1)
-            html = html.replace(Const.REPLACE, text + icon, 1)
-            async with aiofiles.open("speech-bubble.html", "w") as f:
-                await f.write(html)
-
         if self.bubble_item_id:
+            if text and self.html_template:
+                icon = ""
+                if text.endswith(Const.REPLACE):
+                    text = text.removesuffix(Const.REPLACE)
+                    icon = (
+                        f'&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<img src="icons/{text}.png" />'
+                    )
+                html = self.html_template.replace(
+                    Const.REPLACE, "show" if alt_channel else "hide", 1
+                )
+                html = html.replace(Const.REPLACE, text + icon, 1)
+                async with aiofiles.open("speech-bubble.html", "w") as f:
+                    await f.write(html)
+
+                await self.websocket.call(
+                    simpleobsws.Request(
+                        "PressInputPropertiesButton",
+                        {
+                            "inputName": OBS.BUB_SOURCE,
+                            "propertyName": "refreshnocache",
+                        },
+                    )
+                )
+
             await self.websocket.call(
                 simpleobsws.Request(
                     "SetSceneItemEnabled",
@@ -614,11 +672,15 @@ class MainWindow(QMainWindow):
                         self.text_to_speech(self.input_text.text(), Const.ALT_CHANNEL)
                     )
                 else:
-                    _LOGGER.info("Shift + Return pressed with no text input. Stopping player.")
+                    _LOGGER.info(
+                        "Shift + Return pressed with no text input. Stopping player."
+                    )
                     self.stop()
             elif self.input_text.text():
                 _LOGGER.info("Return pressed for main mic channel")
-                asyncio.create_task(self.text_to_speech(self.input_text.text(), Const.MAIN_CHANNEL))
+                asyncio.create_task(
+                    self.text_to_speech(self.input_text.text(), Const.MAIN_CHANNEL)
+                )
             else:
                 _LOGGER.info("Return pressed with no text input.")
 
@@ -670,10 +732,13 @@ def setup_event_loop(app):
     """Starting the event loop."""
     # from PySide6.QtAsyncio import QAsyncioEventLoop
     # loop = QAsyncioEventLoop(app)
-    loop = QEventLoop(app)  # Remove this line and uncomment above if switching to QtAsyncio
+    loop = QEventLoop(
+        app
+    )  # Remove this line and uncomment above if switching to QtAsyncio
     # asyncSlot() may need changing as well..
     asyncio.set_event_loop(loop)
     return loop
+
 
 def main():
     app = QApplication(sys.argv)
