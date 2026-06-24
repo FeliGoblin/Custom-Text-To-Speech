@@ -136,4 +136,9 @@ FIXES = {
     "n;t": "n't",
 }
 
-PRONUNCIATIONS = {"retard": "re'tard"}
+PRONUNCIATIONS = {
+    "goated": "goat'd",
+    "res ": "rez ",
+    "retarded": "re'tard'd",
+    "retard": "re'tard",
+}
