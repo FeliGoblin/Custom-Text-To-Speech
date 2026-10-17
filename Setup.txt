@@ -5,6 +5,7 @@ pip install simpleobsws
 pip install qasync
 pip install aiofiles
 pip install PySide6
+pip install pyserial
 
 font PTN77f.ttf:
 https://github.com/desero/pt-sans

@@ -1,23 +1,23 @@
-from enum import Enum, StrEnum, IntEnum
-from PySide6.QtGui import QIcon
-from dotenv import load_dotenv
 import os
+from enum import Enum, IntEnum, StrEnum
+
+from dotenv import load_dotenv
+from PySide6.QtGui import QIcon
 
 load_dotenv("secrets.env")
 
 ON = True
 OFF = False
 
-
 class Const(StrEnum):
     API_KEY = str(os.getenv("API_KEY"))
     API_REGION = str(os.getenv("API_REGION"))
     MAIN_CHANNEL = str(os.getenv("MAIN_CHANNEL"))
     ALT_CHANNEL = str(os.getenv("ALT_CHANNEL"))
-    TTS_FILE = "output.wav"
+    TTS_FILE = "output.mp3"
     MACRO_FILE = "macro/$.wav"
     ICON_FILE = "icons/$.png"
-    CUSTOM_FILE = "macro/cust_macro.wav"
+    CUSTOM_FILE = "macro/cust_macro.mp3"
     LABEL = "label"
     WIDTH = "width"
     PHRASE = "phrase"
@@ -27,10 +27,17 @@ class Const(StrEnum):
     _ = "_"
 
 
+class ElevenLabs(StrEnum):
+    API_KEY = str(os.getenv("ELEVENLABS_API_KEY"))
+    VOICE_ID = str(os.getenv("ELEVENLABS_VOICE_ID"))
+    MODEL_ID_FAST = str(os.getenv("ELEVENLABS_MODEL_ID_FAST"))
+    MODEL_ID = str(os.getenv("ELEVENLABS_MODEL_ID"))
+    FORMAT = str(os.getenv("ELEVENLABS_FORMAT"))
+
 class Layout(IntEnum):
     FIXED_WIDTH = 450
     FIXED_ROW_HEIGHT = 30
-    DEFAULT_ROWS = 3
+    DEFAULT_ROWS = 4
 
 
 class OBS(StrEnum):
@@ -56,6 +63,17 @@ class Emotion(StrEnum):
     UNFRIENDLY = "Unfriendly"
     WHISPERING = "Whispering"
 
+class VoiceTags(StrEnum):
+    WHISPER = "whispers"
+    SARCASTIC = "sarcastic"
+    ANGRY = "angry"
+    CURIOUS = "curious"
+    EXCITED = "excited"
+    CRYING = "crying"
+    SHOUT = "shout"
+    LAUGH = "laugh"
+    SIGH = "sigh"
+    EXHALE = "exhale"
 
 class Voice(StrEnum):
     EN_JANE = "en-US-JaneNeural"

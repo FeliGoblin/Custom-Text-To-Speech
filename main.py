@@ -1,62 +1,61 @@
+import asyncio
+import logging
 import re
 import sys
-import aiofiles
-import vlc
-import logging
-import asyncio
-from functools import partial
+from datetime import UTC, datetime
 from enum import StrEnum
-from qasync import QEventLoop, asyncSlot
+from functools import partial
 
+import aiofiles
+from elevenlabs import VoiceSettings
+import simpleobsws
+import vlc
+from elevenlabs.client import ElevenLabs as EleLabs
+from elevenlabs.play import save
+from PySide6.QtCore import QMetaObject, QPointF, QSize, Qt, QTimer, Slot
 from PySide6.QtGui import (
+    QFocusEvent,
     QFont,
     QFontDatabase,
     QIcon,
     QKeyEvent,
     QMouseEvent,
 )
-from PySide6.QtCore import QSize, Qt, QTimer, QPointF, QMetaObject, Slot
-
 from PySide6.QtWidgets import (
     QApplication,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
     QMainWindow,
-    QPushButton,
-    QWidget,
-    QSizePolicy,
-    QHBoxLayout,
-    QVBoxLayout,
     QMenu,
+    QPushButton,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
 )
-from azure.cognitiveservices.speech import (
-    SpeechConfig,
-    SpeechSynthesizer,
-    Connection,
-    SpeechSynthesisOutputFormat,
-    AudioDataStream,
-    ResultReason,
-    CancellationReason,
-)
+from qasync import QEventLoop, asyncSlot
 
 from const import (
-    Const,
-    Layout,
-    OBS,
-    Emotion,
-    Voice,
-    RaidIcon,
-    WebSocketIcon,
-    PhraseMacro,
     FIXES,
-    PRONUNCIATIONS,
-    ON,
+    OBS,
     OFF,
+    ON,
+    Const,
+    ElevenLabs,
+    Layout,
+    PhraseMacro,
+    RaidIcon,
+    VoiceTags,
+    WebSocketIcon,
 )
-import simpleobsws
 
 logging.basicConfig(level=logging.INFO)
 _LOGGER = logging.getLogger("TTS")
+
+REPEAT_KEYS = ("Backspace", "Delete", "Left", "Right")
+REPEAT_DELAY = 0.4  # seconds held before repeating starts
+REPEAT_INTERVAL = 0.03  # seconds between repeats (about 33 per second)
+REPEAT_MAX = 10.0  # safety net: give up if a key-up event is ever lost
 
 
 class MainWindow(QMainWindow):
@@ -66,17 +65,20 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.app: QApplication = app
         self.setWindowTitle("Text to Speech")
-        self.start_pos: QPointF = None
+        self.start_pos: QPointF | None = None
 
         # VLC
-        self.player: vlc.MediaPlayer = vlc.MediaPlayer()
+        self.player = vlc.MediaPlayer()
         self.custom_macro_text: str = ""
 
-        # Azure
-        self.speech_synthesizer: SpeechSynthesizer | None = None
-        self.tts_emotion: str = Emotion.FRIENDLY
-        self.tts_voice: str = Voice.EN_JANE
-        self.setup_synthesis()
+        # Eleven Labs
+        self.elevenlabs = EleLabs(api_key=ElevenLabs.API_KEY)
+        self.tts_voice = "ElevenLabs"
+        self.tts_emotion = ""
+        self.credit_used = 0
+        self.credit_limit = 0
+        self.reset_date = datetime.now(tz=UTC)
+        self.voice_settings = VoiceSettings(stability=0.75)
 
         # OBS
         self.websocket: simpleobsws.WebSocketClient | None = None
@@ -88,9 +90,13 @@ class MainWindow(QMainWindow):
         self.html_template: str = ""
         self.last_tts_text: str = ""
 
+        # Keyboard Capture
+        self._repeat_key = None
+        self._repeat_task = None
+
         # Widgets
         self.btn_cust_macro: QPushButton | None = None
-        self.input_text: QLineEdit | None = None
+        self.input_text = KeepCursorLineEdit()
         self.menu_emotion: QMenu | None = None
         self.menu_voice: QMenu | None = None
         self.number_row_state: bool = False
@@ -103,7 +109,8 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout()
         layout.setSpacing(0)
         layout.setContentsMargins(0, 0, 0, 0)
-        number_row, row_1, row_2, row_3 = (
+        tag_row, number_row, row_1, row_2, row_3 = (
+            QHBoxLayout(),
             QHBoxLayout(),
             QHBoxLayout(),
             QHBoxLayout(),
@@ -147,7 +154,11 @@ class MainWindow(QMainWindow):
                 make_button(
                     icon=Const.ICON_FILE.replace(Const.REPLACE, icon.value, 1),
                     size=(30, 30),
-                    click=partial(self.play_macro, icon.value),
+                    click=partial(
+                        self.slot_text_to_speech,
+                        icon.value.capitalize(),
+                        Const.MAIN_CHANNEL,
+                    ),
                 )
             )
 
@@ -178,7 +189,12 @@ class MainWindow(QMainWindow):
                 make_button(
                     phrase.value.get(Const.LABEL, ""),
                     size=(phrase.value.get(Const.WIDTH, 40), 30),
-                    click=partial(self.play_macro, phrase.name.lower()),
+                    # click=partial(self.play_macro, phrase.name.lower()),
+                    click=partial(
+                        self.slot_text_to_speech,
+                        phrase.value.get(Const.PHRASE, ""),
+                        Const.MAIN_CHANNEL,
+                    ),
                 )
             )
 
@@ -197,7 +213,6 @@ class MainWindow(QMainWindow):
             )
 
         # Text Input
-        self.input_text = QLineEdit()
         self.input_text.setMinimumSize(340, 30)
         self.input_text.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.input_text.setMouseTracking(True)
@@ -211,27 +226,38 @@ class MainWindow(QMainWindow):
             )
         )
 
+        # Voice Tag Buttons
+        for tag in VoiceTags:
+            btn = make_button(
+                f" [{tag.value}] ",
+                click=partial(self.insert_tag, tag.value),
+            )
+            btn.setStyleSheet("QPushButton { font-size: 13px; border: none; }")
+            btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+            tag_row.addWidget(btn)
+
         # Layout Stuff
         layout.addLayout(row_1)
         layout.addWidget(self.number_row_container)
         self.number_row_container.hide()
         layout.addLayout(row_2)
         layout.addLayout(row_3)
+        layout.addLayout(tag_row)
 
         widget = QWidget()
         widget.setLayout(layout)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.setFixedSize(
-            QSize(Layout.FIXED_WIDTH, Layout.FIXED_ROW_HEIGHT * self.active_rows)
+            QSize(Layout.FIXED_WIDTH, (Layout.FIXED_ROW_HEIGHT * self.active_rows) - 6)
         )
         self.setCentralWidget(widget)
-        self.setWindowFlag(Qt.WindowStaysOnTopHint)
-        self.setWindowFlag(Qt.FramelessWindowHint)
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
+        self.setWindowFlag(Qt.WindowType.FramelessWindowHint)
 
         # Context Menu
         self.context_menu = QMenu(self)
-        self.menu_emotion = self.context_menu.addMenu("Emotion")
-        self.menu_voice = self.context_menu.addMenu("Voice")
+        # self.menu_emotion = self.context_menu.addMenu("Emotion")
+        # self.menu_voice = self.context_menu.addMenu("Voice")
         self.context_menu.addAction("Toggle Numbers").triggered.connect(
             self.toggle_number_row
         )
@@ -243,13 +269,14 @@ class MainWindow(QMainWindow):
         )
 
         # Fill menus
-        populate_menu(self.menu_emotion, Emotion, self.set_emotion)
-        populate_menu(self.menu_voice, Voice, self.set_voice)
+        # populate_menu(self.menu_emotion, Emotion, self.set_emotion)
+        # populate_menu(self.menu_voice, Voice, self.set_voice)
 
     async def setup(self):
         self.websocket_reconnect_task = asyncio.create_task(
             self.connect_obs_websocket()
         )
+        await self.update_credits()
 
     def toggle_number_row(self) -> None:
         """Show or hide the number row."""
@@ -259,13 +286,84 @@ class MainWindow(QMainWindow):
             self.setFixedSize(
                 QSize(Layout.FIXED_WIDTH, Layout.FIXED_ROW_HEIGHT * self.active_rows)
             )
-            self.number_row_container.show()
+            if self.number_row_container:
+                self.number_row_container.show()
         else:
             self.active_rows -= 1
             self.setFixedSize(
                 QSize(Layout.FIXED_WIDTH, Layout.FIXED_ROW_HEIGHT * self.active_rows)
             )
-            self.number_row_container.hide()
+            if self.number_row_container:
+                self.number_row_container.hide()
+
+    def _edit_key(self, key: str):
+        if key == "Backspace":
+            self.input_text.backspace()
+        elif key == "Delete":
+            self.input_text.del_()
+        elif key == "Left":
+            if self.input_text.hasSelectedText():
+                self.input_text.setCursorPosition(self.input_text.selectionStart())
+            else:
+                self.input_text.cursorBackward(False)
+        elif key == "Right":
+            if self.input_text.hasSelectedText():
+                self.input_text.setCursorPosition(self.input_text.selectionEnd())
+            else:
+                self.input_text.cursorForward(False)
+
+    def _stop_repeat(self):
+        if self._repeat_task:
+            self._repeat_task.cancel()
+            self._repeat_task = None
+        self._repeat_key = None
+
+    async def _repeat(self, key: str):
+        await asyncio.sleep(REPEAT_DELAY)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + REPEAT_MAX
+        while loop.time() < deadline:
+            self._edit_key(key)
+            await asyncio.sleep(REPEAT_INTERVAL)
+
+    async def on_key(self, data: dict):
+        if data.get("source") == "pico-keyboard":
+            kind = data.get("type")
+            key = data.get("key")
+
+            if kind == "up":
+                if key == self._repeat_key:  # the held key was released
+                    self._stop_repeat()
+                return
+            if kind != "down":  # ignore modifier-only events
+                return
+
+            mods = set(data.get("mods", []))
+
+            # Like a real keyboard, only the most recently pressed key repeats.
+            self._stop_repeat()
+
+            if key in ("Enter", "KpEnter"):
+                text = self.input_text.text()
+                if "shift" not in mods:
+                    await self.text_to_speech(text, Const.MAIN_CHANNEL)
+                elif text:
+                    await self.text_to_speech(text, Const.ALT_CHANNEL)
+                else:
+                    self.stop()
+
+            elif key in REPEAT_KEYS:
+                self._edit_key(key)
+                self._repeat_key = key
+                self._repeat_task = asyncio.create_task(self._repeat(key))
+
+            elif key == "a" and "ctrl" in mods:
+                self.input_text.selectAll()
+
+            # Letters, numbers, symbols and space. `char` is already shift-aware ("A", "£", ...)
+            # and is None for non-character keys. insert() replaces any selected text.
+            elif data.get("char") and not mods & {"ctrl", "alt", "gui"}:
+                self.input_text.insert(data["char"])
 
     # ------------------------------
     # VLC Media Player
@@ -273,14 +371,19 @@ class MainWindow(QMainWindow):
 
     def play(self, file: str, channel: str) -> None:
         """Play audio file."""
+        if not self.player:
+            return
         self.player.pause()
         self.player.set_media(vlc.Media(file))
+        self.player.audio_set_volume(90)
         self.player.audio_output_device_set(None, channel)
         _LOGGER.info("Playing audio file (%s) on %s", file, Const(channel).name)
         self.player.play()
 
     def stop(self) -> None:
         """Stop the player."""
+        if not self.player:
+            return
         _LOGGER.info("Stopping the player")
         self.player.stop()
 
@@ -298,7 +401,7 @@ class MainWindow(QMainWindow):
                         "A custom macro has not been set", 4
                     )
                     return
-                return self.set_custom_macro()
+                return await self.set_custom_macro()
             file = Const.CUSTOM_FILE
             text = self.custom_macro_text
         else:
@@ -338,8 +441,24 @@ class MainWindow(QMainWindow):
         await self.set_progress_message()
 
     @asyncSlot()
+    async def insert_tag(self, tag: str) -> None:
+        """Insert a voice tag into the text input, padding with spaces as needed."""
+        text = self.input_text.text()
+        pos = self.input_text.cursorPosition()
+
+        insertion = f"[{tag}]"
+        if pos > 0 and text[pos - 1] != " ":
+            insertion = " " + insertion
+        if pos == len(text) or text[pos] != " ":
+            insertion += " "
+
+        self.input_text.insert(insertion)
+
+    @asyncSlot()
     async def set_custom_macro(self) -> None:
         """Set the custom macro."""
+        if not self.btn_cust_macro:
+            return
         custom_text = self.input_text.text()
         if not custom_text:
             _LOGGER.warning("Custom Macro: No text was entered")
@@ -362,10 +481,7 @@ class MainWindow(QMainWindow):
         With no args given, Voice information is shown as default.
         Optionally show message for set amount of seconds before returning to default."""
         if not text:
-            voice = self.tts_voice.rsplit("-", 1)[-1]
-            if "Neural" in voice:
-                voice = voice.removesuffix("Neural")
-            text = f" {voice} - {self.tts_emotion}"
+            text = f" {self.credit_limit - self.credit_used}/{self.credit_limit} credits   -   {(self.reset_date - datetime.now(tz=UTC)).days} days"
 
         _LOGGER.info("Setting the line-edit placeholder to: %s", text)
         self.input_text.setPlaceholderText(text)
@@ -374,28 +490,32 @@ class MainWindow(QMainWindow):
             await self.set_progress_message()
 
     # ------------------------------
-    # Azure Text to Speech
+    # ElevenLabs Text to Speech
     # ------------------------------
 
-    def setup_synthesis(self) -> None:
-        """Configure and connect to Azure TTS."""
-        speech_config = SpeechConfig(
-            subscription=Const.API_KEY, region=Const.API_REGION
+    async def update_credits(self):
+        user = self.elevenlabs.user.get()
+        sub = user.subscription
+        print(sub)
+        self.credit_used = sub.character_count
+        self.credit_limit = sub.character_limit
+        if not sub.next_character_count_reset_unix:
+            return
+        self.reset_date = datetime.fromtimestamp(
+            sub.next_character_count_reset_unix, tz=UTC
         )
-        speech_config.set_speech_synthesis_output_format(
-            SpeechSynthesisOutputFormat.Riff24Khz16BitMonoPcm
-        )
-        self.speech_synthesizer = SpeechSynthesizer(
-            speech_config=speech_config, audio_config=None
-        )
-        _LOGGER.info("Connecting to Azure TTS")
-        connection = Connection.from_speech_synthesizer(self.speech_synthesizer)
-        connection.open(True)
-        _LOGGER.info("Connected!")
 
     @Slot()
     def clear_text_input(self):
         self.input_text.clear()
+
+    @asyncSlot()
+    async def slot_text_to_speech(
+        self, input_text: str, channel: str, *, create_custom_macro: bool = False
+    ) -> None:
+        await self.text_to_speech(
+            input_text, channel, create_custom_macro=create_custom_macro
+        )
 
     async def text_to_speech(
         self, input_text: str, channel: str, *, create_custom_macro: bool = False
@@ -407,8 +527,6 @@ class MainWindow(QMainWindow):
 
         # text_to_speech() not in GUI thread, so interact with widget with invokeMethod
         QMetaObject.invokeMethod(self, "clear_text_input")
-        tts_rate = "5"
-        tts_pitch = "4"
 
         _LOGGER.info("Fixing typing mistakes")
         for mistake, fix in FIXES.items():
@@ -417,55 +535,37 @@ class MainWindow(QMainWindow):
         # Differentiate Azure TTS input from the written text.
         tts_input = input_text
 
-        _LOGGER.info("Fixing pronunciations")
-        for mispronounced, repronounced in PRONUNCIATIONS.items():
-            tts_input = re.sub(
-                mispronounced, repronounced, tts_input, flags=re.IGNORECASE
-            )
+        # _LOGGER.info("Fixing pronunciations")
+        # for mispronounced, repronounced in PRONUNCIATIONS.items():
+        #    tts_input = re.sub(
+        #        mispronounced, repronounced, tts_input, flags=re.IGNORECASE
+        #    )
 
-        # SSML creation.
-        tts_ssml = (
-            '<speak xmlns="http://www.w3.org/2001/10/synthesis" xmlns:mstts="http://www.w3.org/2001/mstts" '
-            + 'xmlns:emo="http://www.w3.org/2009/10/emotionml" version="1.0" xml:lang="en-US">'
-            + f'<voice name="{self.tts_voice}"><mstts:express-as style="{self.tts_emotion.lower()}" styledegree="1">'
-            + f'<prosody rate="{tts_rate}%" pitch="{tts_pitch}%">{tts_input}</prosody>'
-            + "</mstts:express-as></voice></speak>"
+        audio_bytes = self.elevenlabs.text_to_speech.convert(
+            text=tts_input,
+            voice_id=ElevenLabs.VOICE_ID,
+            model_id=ElevenLabs.MODEL_ID,
+            output_format=ElevenLabs.FORMAT,
+            voice_settings=self.voice_settings,
         )
 
-        tts_result = await asyncio.to_thread(
-            self.speech_synthesizer.speak_ssml_async(tts_ssml).get
-        )
-        if tts_result.reason == ResultReason.Canceled:
-            cancellation_details = tts_result.cancellation_details
-            _LOGGER.warning(
-                "Speech synthesis canceled: %s", cancellation_details.reason
-            )
-            if cancellation_details.reason == CancellationReason.Error:
-                if cancellation_details.error_details:
-                    _LOGGER.error(
-                        "Error details: %s", cancellation_details.error_details
-                    )
-            return
-
-        # Save speech to memory.
-        tts_stream = AudioDataStream(tts_result)
+        await self.update_credits()
 
         # Save the custom macro if applicable.
         if create_custom_macro:
-            tts_stream.save_to_wav_file(Const.CUSTOM_FILE)
+            save(audio_bytes, Const.CUSTOM_FILE)
             _LOGGER.info("Saved custom macro file: %s", Const.CUSTOM_FILE)
             return
 
-        tts_stream.save_to_wav_file(Const.TTS_FILE)
+        save(audio_bytes, Const.TTS_FILE)
         _LOGGER.info("Saved speech file: %s", Const.TTS_FILE)
         self.last_tts_text = input_text
+
         self.play(Const.TTS_FILE, channel)
         if self.speaking_task:
             self.speaking_task.cancel()
         self.speaking_task = asyncio.create_task(
-            self.avatar_talk(
-                alt_channel=False if channel == Const.MAIN_CHANNEL else True
-            )
+            self.avatar_talk(alt_channel=channel != Const.MAIN_CHANNEL)
         )
         # await self.avatar_talk()
 
@@ -555,6 +655,8 @@ class MainWindow(QMainWindow):
                 )
                 self.bubble_item_id = bubble_response.responseData["sceneItemId"]
 
+                self.websocket.register_event_callback(self.on_key, "CustomEvent")
+
                 _LOGGER.info("Connected to OBS!")
                 attempt = 0
                 disconnected = False
@@ -581,6 +683,8 @@ class MainWindow(QMainWindow):
         self, override: str | None = None, alt_channel: bool = False
     ) -> None:
         """Make the on-screen avatar talk while the speech audio is playing."""
+        if not self.player:
+            return
         if self.websocket and self.websocket.is_identified():
             await self.send_speech_bubble_text(False)
             await asyncio.sleep(0.2)
@@ -599,6 +703,8 @@ class MainWindow(QMainWindow):
 
     async def move_mouth(self, enable: bool) -> None:
         """Enable and disable the open-mouth image of the avatar."""
+        if not self.websocket:
+            return
         if self.avatar_item_id:
             await self.websocket.call(
                 simpleobsws.Request(
@@ -619,6 +725,9 @@ class MainWindow(QMainWindow):
             await self.load_html_template()
         if not self.html_template:
             await self.set_progress_message("HTML template could not be loaded")
+
+        if not self.websocket:
+            return
 
         if self.bubble_item_id:
             if text and self.html_template:
@@ -726,6 +835,16 @@ class MainWindow(QMainWindow):
             _LOGGER.warning(f"Error while disconnecting OBS WebSocket: {e}")
         self.stop()
         QTimer.singleShot(0, self.app.quit)
+
+class KeepCursorLineEdit(QLineEdit):
+    """Keeps the text cursor blinking when the window/app is not the active one."""
+
+    def focusOutEvent(self, e: QFocusEvent):
+        if (
+            e.reason() == Qt.FocusReason.ActiveWindowFocusReason
+        ):  # window deactivated, not Tab / click-away
+            return
+        super().focusOutEvent(e)
 
 
 def setup_event_loop(app):
